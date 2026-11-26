@@ -1,4 +1,4 @@
-const CACHE = 'building-ledger-2026.11.14-01';
+const CACHE = 'building-ledger-2026.11.26-07';
 const APP_SHELL = [
   './',
   './index.html',
@@ -10,11 +10,12 @@ const APP_SHELL = [
   './vendor/fonts/ibm-plex-sans-arabic-400.ttf',
   './vendor/fonts/ibm-plex-sans-arabic-500.ttf',
   './vendor/fonts/ibm-plex-sans-arabic-700.ttf',
-  './styles.css?v=2026.11.14-01',
-  './backup-core.js?v=2026.11.14-01',
-  './drive-backup.js?v=2026.11.14-01',
-  './script-backup.js?v=2026.11.14-01',
-  './ledger.js?v=2026.11.14-01',
+  './styles.css?v=2026.11.26-07',
+  './backup-core.js?v=2026.11.26-07',
+  './drive-backup.js?v=2026.11.26-07',
+  './script-backup.js?v=2026.11.26-07',
+  './receipt-images.js?v=2026.11.26-07',
+  './ledger.js?v=2026.11.26-07',
   './vendor/xlsx.full.min.js',
   './vendor/html2canvas.min.js',
   './vendor/jspdf.umd.min.js'

@@ -124,6 +124,17 @@ button.li::after{content:"‹";flex:none;width:28px;height:28px;border-radius:50
 @media (max-width:360px){.backup-card .row{display:block}.backup-card .row>*{width:100%;margin-top:8px}.backup-card .row>*:first-child{margin-top:0}}
 
 
+/* Recurring-expense management card. */
+.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.top-actions .btn{width:auto;display:inline-block;margin:0!important}
+.recurring-card{margin-bottom:10px;border-top:3px solid var(--teal);padding-block:10px}
+.recurring-card .hrow{align-items:center}.recurring-card .hrow>div{min-width:0}.recurring-card .hrow>b,.recurring-card .hrow b{font-size:14px}
+.recurring-list{margin-top:7px;border-top:1px solid var(--ln)}
+.recurring-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto minmax(0,2.4fr);align-items:center;gap:7px;padding:6px 0!important}
+.recurring-row .m{min-width:0}.recurring-row .m b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.recurring-row .m small{display:block;color:var(--mut);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec-actions{display:flex;align-items:center;gap:5px;min-width:0}.recurring-row .mini{margin:0!important;font-size:9.6px;padding-inline:8px;flex:0 0 auto}.recurring-row .rec-review{flex:1 1 auto;min-width:118px;white-space:nowrap}
+.recurring-card>.btn{margin-top:7px!important}
+@media (max-width:600px){.recurring-row{grid-template-columns:minmax(0,1fr) auto}.recurring-row .m{grid-column:1/-1}.recurring-row .tag{display:none}.rec-actions{grid-column:1/-1;width:100%}.recurring-card .hrow{display:flex;flex-wrap:wrap}.recurring-card .hrow .btn{margin-inline-start:auto}}
+@media (max-width:360px){.top-actions{width:100%}.top-actions .btn{flex:1;min-width:0}.recurring-card{padding-inline:10px}.recurring-row{gap:4px}.rec-actions{gap:3px}.recurring-row .mini{font-size:8.5px;padding-inline:5px}.recurring-row .rec-review{font-size:8px}}
 /* Compact density pass: approximately 20% smaller type/content and 15% shorter buttons. */
 body{font-size:12px}
 h1{font-size:18px}h2{font-size:11px}#sh h2{font-size:14px}.top{margin-bottom:13px}.top small{font-size:11px}
@@ -197,3 +208,15 @@ label{font-size:10.4px;margin:11px 0 4px}input,select,textarea{padding:10px;bord
 @media (max-width:899px){
   #app .card:has(>button[data-a="unit"]),#app .card:has(>button[data-a="expOpen"]){display:block}
 }
+
+
+.receipt-field{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.receipt-field input[type=file]{width:100%;padding:10px;border:1px dashed var(--line);border-radius:12px;background:var(--card);color:var(--txt)}
+.receipt-error{margin:8px 0;background:var(--badb);color:var(--bad)}
+.receipt-item{display:flex;align-items:center;gap:10px;margin-top:9px;padding:8px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.025)}
+.receipt-item img{width:58px;height:58px;object-fit:cover;border-radius:10px;background:#fff}
+.receipt-missing{display:inline-flex;align-items:center;justify-content:center;width:104px;min-height:58px;padding:8px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:11px;text-align:center}
+.receipt-meta{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.receipt-meta b,.receipt-meta small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.receipt-meta small{color:var(--muted)}
+.receipt-gallery{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.receipt-gallery a{position:relative;display:block}.receipt-gallery img{width:104px;height:104px;object-fit:cover;border-radius:14px;border:1px solid var(--line);background:#fff}.receipt-gallery .tag{position:absolute;right:4px;bottom:4px;font-size:9px;padding:3px 6px}
+.receipt-gallery>.receipt-missing{position:relative;min-height:104px}.receipt-gallery>.receipt-missing .tag{position:absolute;right:4px;bottom:4px;font-size:9px;padding:3px 6px}
+@media (min-width:900px){.receipt-field{max-width:760px}.receipt-gallery img{width:132px;height:132px}}

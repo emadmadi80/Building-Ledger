@@ -49,12 +49,13 @@
     return device;
   };
   var defaultPrefs = function () {
-    return { enabled: false, time: '21:15', intervalHours: 24, pending: false, changedAt: 0, lastAutoAt: 0, lastLocalAt: 0, lastError: '' };
+    return { enabled: false, time: '21:15', intervalHours: 24, includeReceiptImages: true, pending: false, changedAt: 0, lastAutoAt: 0, lastLocalAt: 0, lastError: '' };
   };
   var getPrefs = function () {
     var saved = readJson(PREFS_KEY, {});
     var p = Object.assign(defaultPrefs(), saved || {});
     p.intervalHours = [1, 3, 12, 24, 72].indexOf(+p.intervalHours) >= 0 ? +p.intervalHours : 24;
+    p.includeReceiptImages = p.includeReceiptImages !== false;
     p.time = /^([01]\d|2[0-3]):[0-5]\d$/.test(p.time) ? p.time : '21:15';
     p.enabled = !!p.enabled;
     return p;
@@ -71,11 +72,12 @@
     var c = counts(state);
     return c.units + ' وحدة، ' + c.payments + ' دفعة، ' + c.expenses + ' مصروف';
   };
-  var cleanState = function (state) {
+  var cleanState = function (state, includeReceiptImages) {
     var copy = clone(state || {});
     delete copy._backup;
     delete copy._driveToken;
     delete copy._scriptToken;
+    if (includeReceiptImages === false) (copy.exp || []).forEach(function (expense) { if (expense.receipts) expense.receipts = expense.receipts.map(function (r) { return { id: r.id, name: r.name, type: r.type, size: r.size, status: r.status || 'local', driveFileId: r.driveFileId || '', addedAt: r.addedAt || 0 }; }); });
     return copy;
   };
   var connectionSettings = function () {
@@ -85,10 +87,11 @@
       note: 'لا تتضمن النسخة الرموز السرية أو OAuth access token. أعد إدخالها يدويًا بعد الاسترجاع.'
     };
   };
-  var buildBackup = function () {
+  var buildBackup = function (options) {
     var state = current();
     if (!state) throw new Error('لم تُحمّل بيانات الدفتر بعد');
     var p = getPrefs();
+    var includeReceipts = options && typeof options.includeReceiptImages === 'boolean' ? options.includeReceiptImages : p.includeReceiptImages;
     return {
       format: APP + '-backup',
       version: VERSION,
@@ -98,7 +101,8 @@
       preferences: { automatic: p.enabled, time: p.time, intervalHours: p.intervalHours },
       connections: connectionSettings(),
       counts: counts(state),
-      state: cleanState(state)
+      state: cleanState(state, includeReceipts),
+      receiptImagesIncluded: includeReceipts
     };
   };
   var validDate = function (value) { return !value || (/^\d{4}-\d\d-\d\d$/.test(value) && value >= '2000-01-01' && value <= new Date().toISOString().slice(0, 10)); };
@@ -188,7 +192,8 @@
     var script = window.ScriptBackup && window.ScriptBackup.canAuto && window.ScriptBackup.canAuto();
     var adapter = drive ? window.DriveBackup : script ? window.ScriptBackup : null;
     if (!adapter || !adapter.autoUpload) return Promise.resolve(false);
-    return adapter.autoUpload(buildBackup()).then(function () {
+    var includeReceipts = !!(drive && window.DriveBackup.getBackupSettings && window.DriveBackup.getBackupSettings().uploadReceipts);
+    return adapter.autoUpload(buildBackup({ includeReceiptImages: includeReceipts })).then(function () {
       p = getPrefs(); p.pending = false; p.lastAutoAt = now(); p.lastError = ''; savePrefs(p); return true;
     }).catch(function (error) {
       p = getPrefs(); p.lastError = error && error.message ? error.message : 'تعذّر تنفيذ النسخة التلقائية'; savePrefs(p); return false;
@@ -257,6 +262,7 @@
       '<p class="hint">تعمل النسخ التلقائية أثناء فتح التطبيق فقط. لن تُفتح نافذة تفويض Google تلقائيًا.</p>' +
       '<label>اسم هذا الجهاز</label><input id="bk_device" maxlength="80" value="' + escapeHtml(d.name) + '">' +
       '<label style="display:flex;gap:8px;align-items:center"><input id="bk_enabled" type="checkbox" style="width:auto"' + (p.enabled ? ' checked' : '') + '> تفعيل النسخ التلقائية</label>' +
+      '<label style="display:flex;gap:8px;align-items:center"><input id="bk_receipts" type="checkbox" style="width:auto"' + (p.includeReceiptImages ? ' checked' : '') + '> تضمين صور الفواتير داخل نسخة JSON</label>' +
       '<label>وقت المحاولة (بتوقيت الجهاز)</label><input id="bk_time" type="time" value="' + p.time + '">' +
       '<label>الفاصل بين النسخ</label><select id="bk_interval"><option value="1"' + (p.intervalHours === 1 ? ' selected' : '') + '>كل ساعة</option><option value="3"' + (p.intervalHours === 3 ? ' selected' : '') + '>كل 3 ساعات</option><option value="12"' + (p.intervalHours === 12 ? ' selected' : '') + '>كل 12 ساعة</option><option value="24"' + (p.intervalHours === 24 ? ' selected' : '') + '>كل 24 ساعة</option><option value="72"' + (p.intervalHours === 72 ? ' selected' : '') + '>كل 3 أيام</option></select>' +
       '<div class="note">' + (p.pending ? 'هناك تغييرات تنتظر نسخة تلقائية.' : 'لا توجد تغييرات معلقة حاليًا.') + '</div>' +
@@ -269,6 +275,7 @@
     p.enabled = !!document.querySelector('#bk_enabled').checked;
     p.time = document.querySelector('#bk_time').value || '21:15';
     p.intervalHours = +document.querySelector('#bk_interval').value || 24;
+    p.includeReceiptImages = !!document.querySelector('#bk_receipts').checked;
     savePrefs(p);
     if (window.closeS) window.closeS();
     if (window.view) window.view();

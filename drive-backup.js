@@ -5,10 +5,10 @@
   var session = { token: '', expiresAt: 0, connectedAt: 0, lastFile: null, lastSuccess: 0, lastError: '' };
   var esc = function (value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
   var read = function () { try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'); } catch (_) { return {}; } };
-  var write = function () { localStorage.setItem(CONFIG_KEY, JSON.stringify({ clientId: config.clientId || '' })); };
-  var getConfig = function () { if (!config) config = Object.assign({ clientId: '' }, read()); return config; };
-  var getBackupSettings = function () { var c = getConfig(); return { clientId: c.clientId || '', configured: !!c.clientId, connected: !!(session.token && session.expiresAt > Date.now() + 30000) }; };
-  var applyBackupSettings = function (settings) { settings = settings || {}; if (typeof settings.clientId === 'string') { config = { clientId: settings.clientId.trim() }; write(); if (window.view) window.view(); } };
+  var write = function () { localStorage.setItem(CONFIG_KEY, JSON.stringify({ clientId: config.clientId || '', uploadReceipts: !!config.uploadReceipts })); };
+  var getConfig = function () { if (!config) config = Object.assign({ clientId: '', uploadReceipts: false }, read()); return config; };
+  var getBackupSettings = function () { var c = getConfig(); return { clientId: c.clientId || '', uploadReceipts: !!c.uploadReceipts, configured: !!c.clientId, connected: !!(session.token && session.expiresAt > Date.now() + 30000) }; };
+  var applyBackupSettings = function (settings) { settings = settings || {}; var c = getConfig(); if (typeof settings.clientId === 'string') c.clientId = settings.clientId.trim(); if (typeof settings.uploadReceipts === 'boolean') c.uploadReceipts = settings.uploadReceipts; write(); if (window.view) window.view(); };
   var redirectUri = function () { return window.location.origin + window.location.pathname; };
   var origin = function () { return window.location.origin; };
   var statusText = function () {
@@ -51,7 +51,8 @@
   consumeHash();
   var saveConfig = function () {
     var previous = getConfig().clientId;
-    config = { clientId: (document.querySelector('#drive_client_id').value || '').trim() };
+    config = { clientId: (document.querySelector('#drive_client_id').value || '').trim(), uploadReceipts: !!document.querySelector('#drive_upload_receipts').checked };
+    if (config.uploadReceipts && window.S && window.S.exp) { window.S.exp.forEach(function (x) { (x.receipts || []).forEach(function (r) { if (r.data && r.status !== 'uploaded') r.status = 'needs-upload'; }); }); if (window.localSave) window.localSave(); }
     if (previous !== config.clientId) { session.token = ''; session.expiresAt = 0; session.lastFile = null; session.lastSuccess = 0; session.lastError = ''; }
     write();
     if (window.closeS) window.closeS();
@@ -63,7 +64,7 @@
   };
   var openConfig = function () {
     getConfig();
-    window.sheet('<h2 style="margin-top:0">Google Drive</h2><p class="hint">خطأ <b>redirect_uri_mismatch</b> يعني أن Google لم يجد عنوان العودة هذا في إعدادات OAuth. في Google Cloud Console افتح OAuth Client ID ثم أضف العنوان كاملًا تحت <b>Authorized redirect URIs</b> (ليس Authorized JavaScript origins فقط).</p><label>عنوان العودة المطلوب (انسخه كما هو)</label><input id="drive_redirect_uri" dir="ltr" readonly value="' + esc(redirectUri()) + '"><button class="btn g" data-a="driveCopyRedirect">نسخ عنوان العودة</button><label>OAuth Client ID</label><input id="drive_client_id" dir="ltr" value="' + esc(config.clientId) + '" placeholder="123...apps.googleusercontent.com"><button class="btn" data-a="driveSaveConfig">حفظ الإعداد</button><button class="btn g" data-a="driveConnect">حفظ والاتصال الآن</button><button class="btn g" data-a="close">إغلاق</button>');
+    window.sheet('<h2 style="margin-top:0">Google Drive</h2><p class="hint">خطأ <b>redirect_uri_mismatch</b> يعني أن Google لم يجد عنوان العودة هذا في إعدادات OAuth. في Google Cloud Console افتح OAuth Client ID ثم أضف العنوان كاملًا تحت <b>Authorized redirect URIs</b> (ليس Authorized JavaScript origins فقط).</p><label>عنوان العودة المطلوب (انسخه كما هو)</label><input id="drive_redirect_uri" dir="ltr" readonly value="' + esc(redirectUri()) + '"><button class="btn g" data-a="driveCopyRedirect">نسخ عنوان العودة</button><label>OAuth Client ID</label><input id="drive_client_id" dir="ltr" value="' + esc(config.clientId) + '" placeholder="123...apps.googleusercontent.com"><label style="display:flex;gap:8px;align-items:center"><input id="drive_upload_receipts" type="checkbox" style="width:auto"' + (config.uploadReceipts ? ' checked' : '') + '> رفع صور الفواتير تلقائيًا مع نسخة Google Drive</label><p class="hint">تُرفع الصور المضغوطة ضمن نسخة Drive الموثقة، وتتحول حالتها إلى مرفوعة بعد نجاح القراءة الراجعة.</p><button class="btn" data-a="driveSaveConfig">حفظ الإعداد</button><button class="btn g" data-a="driveConnect">حفظ والاتصال الآن</button><button class="btn g" data-a="close">إغلاق</button>');
   };
   var multipart = function (metadata, content) {
     var boundary = 'bldledger-' + Math.random().toString(16).slice(2);
@@ -79,6 +80,7 @@
       return request('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(file.id) + '?alt=media').then(function (response) { return response.json(); }).then(function (roundTrip) {
         if (!roundTrip || roundTrip.format !== 'building-ledger-backup' || roundTrip.version !== 2 || !roundTrip.state) throw new Error('تم الرفع لكن تعذّر التحقق من القراءة الراجعة.');
         session.lastFile = file; session.lastSuccess = Date.now(); session.lastError = '';
+        if (getConfig().uploadReceipts && backup && backup.state && backup.state.exp) { var sent = {}; backup.state.exp.forEach(function (x) { sent[x.id] = x; }); (window.S.exp || []).forEach(function (x) { if (sent[x.id] && x.receipts) x.receipts.forEach(function (r) { if (r.data) { r.status = 'uploaded'; r.driveFileId = file.id; } }); }); if (window.localSave) window.localSave(); }
         try { localStorage.setItem('bld-drive-last-v2', JSON.stringify({ file: file, at: session.lastSuccess, automatic: !!automatic })); } catch (_) {}
         if (window.view && !automatic) window.view();
         if (window.toast && !automatic) window.toast('تم حفظ النسخة في Google Drive والتحقق منها');
@@ -102,7 +104,7 @@
   var cardHtml = function () {
     getConfig();
     var saved = {}; try { saved = JSON.parse(localStorage.getItem('bld-drive-last-v2') || '{}'); } catch (_) {}
-    return '<div class="card backup-card"><div class="backup-head"><div><b>Google Drive</b><div class="hint">' + esc(statusText()) + '</div></div><span class="tag ' + (canAuto() ? 't-ok' : 't-mid') + '">' + (canAuto() ? 'متصل مؤقتًا' : 'غير متصل') + '</span></div><p class="hint">يستخدم مجلد appDataFolder وملفات Building Ledger منفصلة، مع تحقق من القراءة بعد الرفع.</p><div class="kv"><span>آخر نجاح</span><b>' + (session.lastSuccess || saved.at ? new Date(session.lastSuccess || saved.at).toLocaleString('ar-EG') : '—') + '</b></div>' + (session.lastError ? '<p class="note" style="background:var(--badb);color:var(--bad)">' + esc(session.lastError) + '</p>' : '') + '<button class="btn" data-a="driveConnect">' + (canAuto() ? 'إعادة الاتصال' : 'إعداد والاتصال') + '</button><button class="btn g" data-a="driveEditConfig">تعديل OAuth Client ID</button><button class="btn g" data-a="driveBackup">حفظ نسخة الآن</button><button class="btn g" data-a="driveList">عرض سجل Drive</button></div>';
+    return '<div class="card backup-card"><div class="backup-head"><div><b>Google Drive</b><div class="hint">' + esc(statusText()) + '</div></div><span class="tag ' + (canAuto() ? 't-ok' : 't-mid') + '">' + (canAuto() ? 'متصل مؤقتًا' : 'غير متصل') + '</span></div><p class="hint">يستخدم مجلد appDataFolder وملفات Building Ledger منفصلة، مع تحقق من القراءة بعد الرفع.</p><div class="kv"><span>رفع صور الفواتير</span><b>' + (getConfig().uploadReceipts ? 'مفعّل' : 'متوقف') + '</b></div><div class="kv"><span>آخر نجاح</span><b>' + (session.lastSuccess || saved.at ? new Date(session.lastSuccess || saved.at).toLocaleString('ar-EG') : '—') + '</b></div>' + (session.lastError ? '<p class="note" style="background:var(--badb);color:var(--bad)">' + esc(session.lastError) + '</p>' : '') + '<button class="btn" data-a="driveConnect">' + (canAuto() ? 'إعادة الاتصال' : 'إعداد والاتصال') + '</button><button class="btn g" data-a="driveEditConfig">تعديل OAuth Client ID</button><button class="btn g" data-a="driveBackup">حفظ نسخة الآن</button><button class="btn g" data-a="driveList">عرض سجل Drive</button></div>';
   };
   var autoUpload = function (backup) { return upload(backup, true); };
   var copyRedirect = function () {
