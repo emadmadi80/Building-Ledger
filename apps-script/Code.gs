@@ -1,262 +1,209 @@
-const APP_NAME = 'building-ledger';
-const ROOT_FOLDER = 'Building Ledger Backups';
-const SYNC_FILE = 'sync-state.json';
-const MAX_SNAPSHOT_BYTES = 9000000;
-
 /**
- * Building Ledger / Masroof-style synchronization service.
+ * MASROOF — Google Apps Script background backup service
  *
- * Deploy this separate project as a Web app. Put SCRIPT_AUTH_TOKEN in
- * Project Settings > Script properties. The browser sends the token in the
- * POST body; it is never placed in a URL or inside a backup snapshot.
- *
- * Supported POST actions:
- *   ping     - authenticated connection and trigger status
- *   pull     - download the current shared server snapshot
- *   push     - upload only when it is newer than the server snapshot
- *   sync     - bidirectional last-updated synchronization
- *   upload   - compatibility alias for sync plus a device-specific latest file
- *   history  - list dated server archives
- *   archive  - manually archive the current shared snapshot
- *
- * Run installArchiveTrigger() once manually from the Apps Script editor.
- * It replaces any previous archive trigger and schedules one near 21:15 in
- * the Apps Script project timezone. The trigger archives the latest snapshot
- * already received; it does not read a browser that is closed.
+ * Keep WEBHOOK_SECRET private in the Apps Script project. Do not copy it
+ * into the website source. Every deviceId is bound to one Drive file and a
+ * bound file is never overwritten when its envelope belongs to another device.
  */
 
-function doGet() {
-  return json_({
-    ok: true,
-    app: APP_NAME,
-    service: 'Building Ledger bidirectional sync',
-    actions: ['ping', 'pull', 'push', 'sync', 'upload', 'history', 'archive'],
-    triggerInstalled: triggerInstalled_(),
-    timezone: Session.getScriptTimeZone()
-  });
+const CONFIG = {
+  WEBHOOK_SECRET: "CHANGE_THIS_TO_A_LONG_PRIVATE_SECRET",
+  BACKUP_FOLDER_NAME: "MASROOF Background Sync",
+  DEVICE_FILE_PREFIX: "MASROOF-",
+  MAX_DEVICE_NAME_LENGTH: 60,
+};
+
+function doGet(e) {
+  try {
+    const secret = e && e.parameter ? String(e.parameter.secret || "") : "";
+    if (secret !== CONFIG.WEBHOOK_SECRET) return jsonResponse_({ ok: false, error: "Unauthorized" });
+    const deviceId = e && e.parameter ? String(e.parameter.deviceId || "").trim() : "";
+    if (deviceId) validateDeviceId_(deviceId);
+    const props = PropertiesService.getScriptProperties();
+    const response = {
+      ok: true,
+      service: "masroof-background-sync",
+      lastScheduledSync: props.getProperty("LAST_SCHEDULED_SYNC") || null,
+      lastScheduledFileName: props.getProperty("LAST_SCHEDULED_FILE_NAME") || null,
+    };
+    if (deviceId) {
+      const fileId = props.getProperty(devicePropertyKey_(deviceId));
+      const file = fileId ? safeGetFile_(fileId) : null;
+      response.deviceId = deviceId;
+      response.deviceFileId = file ? file.getId() : null;
+      response.deviceLastReceivedAt = props.getProperty(deviceReceivedKey_(deviceId)) || null;
+      response.deviceLastScheduledSync = props.getProperty(deviceScheduledKey_(deviceId)) || null;
+      response.deviceFileName = file ? file.getName() : null;
+    }
+    return jsonResponse_(response);
+  } catch (error) {
+    return jsonResponse_({ ok: false, error: errorMessage_(error) });
+  }
 }
 
 function doPost(e) {
+  const lock = LockService.getScriptLock();
   try {
-    const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    authenticate_(body.authToken);
-    const action = String(body.action || 'ping');
-    if (action === 'ping') return json_(ping_());
-    if (action === 'pull') return json_(pull_());
-    if (action === 'push') return json_(push_(body));
-    if (action === 'sync') return json_(sync_(body));
-    if (action === 'upload') return json_(upload_(body));
-    if (action === 'history') return json_(history_());
-    if (action === 'archive') return json_(archiveNow_());
-    throw new Error('Unsupported action: ' + action);
+    if (!e || !e.postData || !e.postData.contents) return jsonResponse_({ ok: false, error: "Missing request body" });
+    const request = JSON.parse(e.postData.contents);
+    if (request.secret !== CONFIG.WEBHOOK_SECRET) return jsonResponse_({ ok: false, error: "Unauthorized" });
+    if (request.action === "ping") return jsonResponse_({ ok: true, service: "masroof-background-sync", checkedAt: new Date().toISOString() });
+    if (request.action !== "backup") return jsonResponse_({ ok: false, error: "Unsupported action" });
+
+    const payload = request.payload;
+    validatePayload_(payload);
+    const receivedAt = new Date().toISOString();
+    const deviceId = String(payload.deviceId).trim();
+    const deviceName = normalizeDeviceName_(payload.deviceName);
+    lock.waitLock(20000);
+    const folder = getBackupFolder_();
+    const file = upsertDeviceFile_(folder, deviceId, deviceName, payload, receivedAt);
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty(devicePropertyKey_(deviceId), file.getId());
+    props.setProperty(deviceReceivedKey_(deviceId), receivedAt);
+    return jsonResponse_({ ok: true, receivedAt, deviceId, deviceName, fileName: file.getName(), fileId: file.getId() });
   } catch (error) {
-    return json_({ ok: false, error: error && error.message ? error.message : 'Request failed' });
+    return jsonResponse_({ ok: false, error: errorMessage_(error) });
+  } finally {
+    try { lock.releaseLock(); } catch (ignored) { /* lock was not acquired */ }
   }
 }
 
-function authenticate_(token) {
-  const expected = PropertiesService.getScriptProperties().getProperty('SCRIPT_AUTH_TOKEN');
-  if (!expected || !token || token !== expected) throw new Error('Unauthorized');
+/** Copies each known device file to a timestamped file without merging devices. */
+function scheduledSync() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const folder = getBackupFolder_();
+    const propsService = PropertiesService.getScriptProperties();
+    const props = propsService.getProperties();
+    const now = new Date();
+    const stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd-HH-mm-ss");
+    const deviceIds = Object.keys(props)
+      .filter(function (key) { return key.indexOf("DEVICE_FILE_") === 0; })
+      .map(function (key) { return key.substring("DEVICE_FILE_".length); });
+    let copied = 0;
+    deviceIds.forEach(function (deviceId) {
+      const fileId = props[devicePropertyKey_(deviceId)];
+      if (!fileId) return;
+      try {
+        const source = DriveApp.getFileById(fileId);
+        const envelope = readEnvelope_(source);
+        if (!envelope || envelope.deviceId !== deviceId) return;
+        const backupName = source.getName().replace(/\.json$/i, "") + "-scheduled-" + stamp + ".json";
+        folder.createFile(backupName, source.getBlob().getDataAsString(), "application/json");
+        props[deviceScheduledKey_(deviceId)] = now.toISOString();
+        props.LAST_SCHEDULED_SYNC = now.toISOString();
+        props.LAST_SCHEDULED_FILE_NAME = backupName;
+        copied += 1;
+      } catch (error) {
+        // Keep processing other devices when one binding is unavailable.
+      }
+    });
+    props.LAST_SCHEDULED_DEVICE_COUNT = String(copied);
+    propsService.setProperties(props, true);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
-function ping_() {
-  const state = readSync_();
+function setupEvery3Hours() { createSchedule_("hours", 3); }
+function setupEvery12Hours() { createSchedule_("hours", 12); }
+function setupDaily() { createSchedule_("days", 1); }
+
+function createSchedule_(unit, amount) {
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === "scheduledSync") ScriptApp.deleteTrigger(trigger);
+  });
+  const builder = ScriptApp.newTrigger("scheduledSync").timeBased();
+  if (unit === "hours") builder.everyHours(amount).create();
+  else builder.everyDays(amount).create();
+}
+
+function getBackupFolder_() {
+  const folders = DriveApp.getFoldersByName(CONFIG.BACKUP_FOLDER_NAME);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(CONFIG.BACKUP_FOLDER_NAME);
+}
+
+function upsertDeviceFile_(folder, deviceId, deviceName, payload, receivedAt) {
   const props = PropertiesService.getScriptProperties();
-  return {
-    ok: true,
-    app: APP_NAME,
-    triggerInstalled: triggerInstalled_(),
-    serverUpdatedAt: state ? state.updatedAt : 0,
-    serverDevice: state ? state.device : null,
-    lastArchive: Number(props.getProperty('LAST_ARCHIVE') || 0),
-    lastDevice: props.getProperty('LAST_DEVICE') || ''
-  };
-}
+  const boundKey = devicePropertyKey_(deviceId);
+  const boundId = props.getProperty(boundKey);
+  const content = JSON.stringify({ app: "masroof-background-sync", deviceId: deviceId, deviceName: deviceName || null, receivedAt: receivedAt, payload: payload }, null, 2);
 
-function pull_() {
-  const state = readSync_();
-  return response_(state, 'download', false);
-}
-
-function push_(body) {
-  return LockService.getScriptLock().tryLock(30000) ? pushLocked_(body, true) : errorResult_('The sync service is busy; try again.');
-}
-
-function sync_(body) {
-  return LockService.getScriptLock().tryLock(30000) ? pushLocked_(body, false) : errorResult_('The sync service is busy; try again.');
-}
-
-function pushLocked_(body, strictPush) {
-  try {
-    const incoming = validateSnapshot_(body.snapshot);
-    const current = readSync_();
-    const incomingAt = updatedAt_(incoming, body.clientUpdatedAt);
-    const serverAt = current ? Number(current.updatedAt || 0) : 0;
-
-    if (!current || incomingAt > serverAt) {
-      const saved = saveShared_(incoming, body.device, incomingAt);
-      return response_(saved, 'accepted', true);
+  if (boundId) {
+    const boundFile = safeGetFile_(boundId);
+    if (boundFile) {
+      const envelope = readEnvelope_(boundFile);
+      if (!envelope || envelope.deviceId !== deviceId) throw new Error("Bound file belongs to another device");
+      boundFile.setContent(content);
+      return boundFile;
     }
+    props.deleteProperty(boundKey);
+  }
 
-    if (incomingAt < serverAt) {
-      return response_(current, strictPush ? 'conflict' : 'download', false);
+  const preferredName = deviceFileName_(deviceName, deviceId, false);
+  const candidates = folder.getFilesByName(preferredName);
+  while (candidates.hasNext()) {
+    const candidate = candidates.next();
+    const envelope = readEnvelope_(candidate);
+    if (envelope && envelope.deviceId === deviceId) {
+      candidate.setContent(content);
+      props.setProperty(boundKey, candidate.getId());
+      return candidate;
     }
-
-    const same = current && JSON.stringify(current.snapshot) === JSON.stringify(incoming);
-    if (same) return response_(current, 'unchanged', false);
-
-    // Equal timestamps with different content are not silently overwritten.
-    return response_(current, 'conflict', false);
-  } finally {
-    LockService.getScriptLock().releaseLock();
   }
+
+  // If another device already owns the human-readable name, create a
+  // deterministic collision-safe name rather than overwriting that device.
+  const collision = folder.getFilesByName(preferredName).hasNext();
+  const name = deviceFileName_(deviceName, deviceId, collision);
+  const file = folder.createFile(name, content, "application/json");
+  props.setProperty(boundKey, file.getId());
+  return file;
 }
 
-function upload_(body) {
-  const result = sync_(body);
-  if (result.ok && (result.direction === 'accepted' || result.direction === 'unchanged')) {
-    const device = body.device || (body.snapshot && body.snapshot.device) || {};
-    storeDeviceLatest_(body.snapshot, device);
-    result.lastArchive = Number(PropertiesService.getScriptProperties().getProperty('LAST_ARCHIVE') || 0);
-  }
-  return result;
+function deviceFileName_(deviceName, deviceId, collision) {
+  const label = normalizeDeviceName_(deviceName) || "device";
+  const base = CONFIG.DEVICE_FILE_PREFIX + label.toLowerCase().replace(/\s+/g, "-");
+  if (!collision) return base + ".json";
+  const shortId = deviceId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12).replace(/^-+|-+$/g, "") || "unknown";
+  return base + "-" + shortId + ".json";
 }
 
-function saveShared_(snapshot, device, updatedAt) {
-  const root = rootFolder_();
-  const state = {
-    app: APP_NAME,
-    updatedAt: Number(updatedAt || Date.now()),
-    device: safeDevice_(device || snapshot.device || {}),
-    snapshot: snapshot
-  };
-  upsert_(root, SYNC_FILE, JSON.stringify(state, null, 2));
-  PropertiesService.getScriptProperties().setProperty('LAST_DEVICE', state.device.id);
-  return state;
+function normalizeDeviceName_(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9 _-]/g, "").trim().replace(/\s+/g, "-").slice(0, CONFIG.MAX_DEVICE_NAME_LENGTH) || "device";
 }
 
-function response_(state, direction, accepted) {
-  return {
-    ok: true,
-    app: APP_NAME,
-    direction: direction,
-    accepted: !!accepted,
-    serverUpdatedAt: state ? Number(state.updatedAt || 0) : 0,
-    serverDevice: state ? state.device : null,
-    snapshot: state ? state.snapshot : null,
-    lastArchive: Number(PropertiesService.getScriptProperties().getProperty('LAST_ARCHIVE') || 0)
-  };
+function validateDeviceId_(deviceId) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{7,119}$/.test(deviceId)) throw new Error("Invalid device ID format");
 }
 
-function validateSnapshot_(snapshot) {
-  if (!snapshot || snapshot.format !== APP_NAME + '-backup' || Number(snapshot.version) !== 2 || !snapshot.state) {
-    throw new Error('Invalid Building Ledger snapshot');
-  }
-  const text = JSON.stringify(snapshot);
-  if (text.length > MAX_SNAPSHOT_BYTES) throw new Error('Snapshot is too large');
-  if (typeof snapshot.state !== 'object') throw new Error('Snapshot state is invalid');
-  return snapshot;
+function validatePayload_(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("Invalid payload");
+  if (payload.app !== "masroof") throw new Error("Invalid app identifier");
+  if (!Array.isArray(payload.expenses)) throw new Error("Expenses array is missing");
+  if (!payload.deviceId || typeof payload.deviceId !== "string") throw new Error("Device ID is required");
+  validateDeviceId_(String(payload.deviceId).trim());
+  if (String(payload.deviceName || "").length > CONFIG.MAX_DEVICE_NAME_LENGTH) throw new Error("Device name is too long");
 }
 
-function updatedAt_(snapshot, supplied) {
-  const value = Number(supplied || (snapshot.state && snapshot.state.upd) || snapshot.exportedAt || 0);
-  return isFinite(value) && value > 0 ? value : Date.now();
-}
-
-function safeDevice_(device) {
-  const id = String(device.id || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
-  const name = String(device.name || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
-  return { id: id || 'unknown', name: name || id };
-}
-
-function storeDeviceLatest_(snapshot, device) {
-  const d = safeDevice_(device || snapshot.device || {});
-  const folder = deviceFolder_(d.id, d.name);
-  upsert_(folder, 'latest.json', JSON.stringify({ app: APP_NAME, updatedAt: updatedAt_(snapshot), device: d, snapshot: snapshot }, null, 2));
-}
-
-function history_() {
-  const root = rootFolder_();
-  const files = root.getFiles();
-  const rows = [];
-  while (files.hasNext()) {
-    const file = files.next();
-    if (file.getName().indexOf('archive-') !== 0) continue;
-    rows.push({ name: file.getName(), id: file.getId(), createdAt: file.getDateCreated().getTime(), size: file.getSize() });
-  }
-  rows.sort(function(a, b) { return b.createdAt - a.createdAt; });
-  return { ok: true, app: APP_NAME, archives: rows.slice(0, 100), lastArchive: Number(PropertiesService.getScriptProperties().getProperty('LAST_ARCHIVE') || 0) };
-}
-
-function archiveNow_() {
-  return LockService.getScriptLock().tryLock(30000) ? archiveLocked_() : errorResult_('The sync service is busy; try again.');
-}
-
-function archiveLatest_() {
-  const result = archiveNow_();
-  if (!result.ok) throw new Error(result.error);
-}
-
-function archiveLocked_() {
+function readEnvelope_(file) {
   try {
-    const state = readSync_();
-    if (!state || !state.snapshot) return { ok: true, app: APP_NAME, archived: false, message: 'No shared snapshot has been uploaded yet.' };
-    const root = rootFolder_();
-    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmmss");
-    const file = root.createFile('archive-' + stamp + '.json', JSON.stringify(state, null, 2), MimeType.PLAIN_TEXT);
-    const at = Date.now();
-    PropertiesService.getScriptProperties().setProperty('LAST_ARCHIVE', String(at));
-    return { ok: true, app: APP_NAME, archived: true, fileId: file.getId(), lastArchive: at, serverUpdatedAt: state.updatedAt };
-  } finally {
-    LockService.getScriptLock().releaseLock();
+    const value = JSON.parse(file.getBlob().getDataAsString());
+    return value && value.app === "masroof-background-sync" && typeof value.deviceId === "string" ? value : null;
+  } catch (error) {
+    return null;
   }
 }
 
-function installArchiveTrigger() {
-  ScriptApp.getProjectTriggers().filter(function(t) {
-    return t.getHandlerFunction() === 'archiveLatest_';
-  }).forEach(function(t) { ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('archiveLatest_').timeBased().atHour(21).nearMinute(15).everyDays(1).create();
-  return 'Building Ledger sync/archive trigger installed near 21:15';
+function safeGetFile_(fileId) {
+  try { return DriveApp.getFileById(fileId); } catch (error) { return null; }
 }
 
-function triggerInstalled_() {
-  return ScriptApp.getProjectTriggers().some(function(t) { return t.getHandlerFunction() === 'archiveLatest_'; });
-}
-
-function readSync_() {
-  const file = findFile_(rootFolder_(), SYNC_FILE);
-  if (!file) return null;
-  try { return JSON.parse(file.getBlob().getDataAsString()); } catch (error) { throw new Error('Shared sync file is invalid'); }
-}
-
-function rootFolder_() {
-  const folders = DriveApp.getFoldersByName(ROOT_FOLDER);
-  return folders.hasNext() ? folders.next() : DriveApp.createFolder(ROOT_FOLDER);
-}
-
-function deviceFolder_(deviceId, deviceName) {
-  const root = rootFolder_();
-  const name = deviceId + ' - ' + deviceName;
-  const folders = root.getFoldersByName(name);
-  return folders.hasNext() ? folders.next() : root.createFolder(name);
-}
-
-function findFile_(folder, name) {
-  const files = folder.getFilesByName(name);
-  return files.hasNext() ? files.next() : null;
-}
-
-function upsert_(folder, name, contents) {
-  const file = findFile_(folder, name);
-  if (file) { file.setContent(contents); return file; }
-  return folder.createFile(name, contents, MimeType.PLAIN_TEXT);
-}
-
-function errorResult_(message) {
-  return { ok: false, app: APP_NAME, error: message };
-}
-
-function json_(value) {
-  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
-}
+function devicePropertyKey_(deviceId) { return "DEVICE_FILE_" + deviceId; }
+function deviceReceivedKey_(deviceId) { return "DEVICE_RECEIVED_" + deviceId; }
+function deviceScheduledKey_(deviceId) { return "DEVICE_SCHEDULED_" + deviceId; }
+function errorMessage_(error) { return String(error && error.message ? error.message : error); }
+function jsonResponse_(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }

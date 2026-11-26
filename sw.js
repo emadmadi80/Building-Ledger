@@ -1,45 +1,57 @@
-const CACHE = 'building-ledger-2026.11.26-07';
-const APP_SHELL = [
-  './',
-  './index.html',
-  './manifest.webmanifest',
-  './ledger-mark.svg',
-  './pwa-icon-192.png',
-  './pwa-icon-512.png',
-  './vendor/font.css',
-  './vendor/fonts/ibm-plex-sans-arabic-400.ttf',
-  './vendor/fonts/ibm-plex-sans-arabic-500.ttf',
-  './vendor/fonts/ibm-plex-sans-arabic-700.ttf',
-  './styles.css?v=2026.11.26-07',
-  './backup-core.js?v=2026.11.26-07',
-  './drive-backup.js?v=2026.11.26-07',
-  './script-backup.js?v=2026.11.26-07',
-  './receipt-images.js?v=2026.11.26-07',
-  './ledger.js?v=2026.11.26-07',
-  './vendor/xlsx.full.min.js',
-  './vendor/html2canvas.min.js',
-  './vendor/jspdf.umd.min.js'
-];
+const CACHE_NAME = "masroof-pwa-v37-lock-quota";
+const BASE_PATH = new URL("./", self.location.href).pathname;
 
-self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
+self.addEventListener("install", (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.add(BASE_PATH)));
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim()));
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME && key !== CACHE_NAME + "-fonts").map((key) => caches.delete(key))))
+  );
+  self.clients.claim();
 });
 
-self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET') return;
-  const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (request.method === "GET" && (url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com")) {
+    event.respondWith(
+      caches.open(CACHE_NAME + "-fonts").then((cache) =>
+        cache.match(request).then((cached) => {
+          const network = fetch(request).then((r) => { void cache.put(request, r.clone()); return r; }).catch(() => cached);
+          return cached || network;
+        })
+      )
+    );
+    return;
+  }
+  if (request.method !== "GET" || url.origin !== self.location.origin || !url.pathname.startsWith(BASE_PATH)) return;
+
+  if (request.mode === "navigate") {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match(BASE_PATH)))
+    );
+    return;
+  }
+
   event.respondWith(
-    fetch(event.request).then(response => {
-      if (response.ok && (url.pathname === '/' || url.pathname.endsWith('.html') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.webmanifest') || url.pathname.endsWith('.png') || url.pathname.endsWith('.svg') || url.pathname.endsWith('.ttf'))) {
-        const copy = response.clone();
-        caches.open(CACHE).then(cache => cache.put(event.request, copy));
-      }
-      return response;
-    }).catch(() => caches.match(event.request).then(cached => cached || caches.match('./index.html')))
+    caches.match(request).then((cached) => {
+      if (cached) return cached;
+      return fetch(request).then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      });
+    })
   );
 });
