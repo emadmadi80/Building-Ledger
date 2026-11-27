@@ -121,7 +121,10 @@ button.li::after{content:"‹";flex:none;width:28px;height:28px;border-radius:50
 .backup-card .btn{font-size:13px}
 .backup-card label.btn{margin:0}
 .backup-card .note{margin:10px 0 0}
-@media (max-width:360px){.backup-card .row{display:block}.backup-card .row>*{width:100%;margin-top:8px}.backup-card .row>*:first-child{margin-top:0}}
+.more-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.more-actions .btn{width:100%;margin:0!important;display:flex;align-items:center;justify-content:center;text-align:center}
+.more-actions .hint{grid-column:1/-1;margin:0}
+@media (max-width:360px){.backup-card .row:not(.more-actions){display:block}.backup-card .row:not(.more-actions)>*{width:100%;margin-top:8px}.backup-card .row:not(.more-actions)>*:first-child{margin-top:0}}
 
 
 /* Recurring-expense management card. */

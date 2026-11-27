@@ -1,6 +1,6 @@
 # Building Ledger — Standalone Local Web App
 
-Version: `2026.11.26-07`
+Version: `2026.11.27-01`
 
 This folder is a self-contained copy of Building Ledger. It runs as a local web application without a Manus or AI-platform account. Ledger data is stored locally in the browser origin, and local JSON backup/restore works without internet.
 
