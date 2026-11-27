@@ -1,0 +1,21 @@
+Building Ledger standalone package — bundled assets
+
+The following assets are bundled locally so the application can work without CDN access:
+
+- SheetJS Community Edition (xlsx.full.min.js), version 0.18.5
+  Source: https://github.com/SheetJS/sheetjs
+  License: Apache-2.0 / see the upstream project for complete notices.
+
+- html2canvas, version 1.4.1
+  Source: https://github.com/niklasvh/html2canvas
+  License: MIT.
+
+- jsPDF, version 2.5.1
+  Source: https://github.com/parallax/jsPDF
+  License: MIT.
+
+- IBM Plex Sans Arabic font
+  Source: https://github.com/IBM/plex
+  License: SIL Open Font License 1.1.
+
+These notices are included for attribution. The Building Ledger application code and its Apps Script source are supplied for the owner's local use and editing.
